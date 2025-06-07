@@ -3,23 +3,25 @@ from datetime import datetime, timedelta
 import pandas as pd
 import calendar
 from io import BytesIO
+import uuid
 
 # Initialize session state for trade history if it doesn't exist
 if 'trade_history' not in st.session_state:
-    st.session_state.trade_history = pd.DataFrame(columns=['Date', 'Type', 'Points', 'P/L'])
+    st.session_state.trade_history = pd.DataFrame(columns=['ID', 'Date', 'Type', 'Ratio', 'Points', 'P/L'])
 
 # Function to add a trade
-def add_trade(date, trade_type):
-    if trade_type == 'TP':
-        points = 2
-        p_l = 'Profit'
-    else:
-        points = -1
-        p_l = 'Loss'
+def add_trade(date, trade_type, ratio):
+    if ratio == '1:1':
+        points = 1 if trade_type == 'TP' else -1
+    else:  # 1:2
+        points = 2 if trade_type == 'TP' else -1
+    p_l = 'Profit' if trade_type == 'TP' else 'Loss'
     
     new_trade = pd.DataFrame({
+        'ID': [str(uuid.uuid4())],
         'Date': [date],
         'Type': [trade_type],
+        'Ratio': [ratio],
         'Points': [points],
         'P/L': [p_l]
     })
@@ -27,6 +29,62 @@ def add_trade(date, trade_type):
     st.session_state.trade_history = pd.concat([st.session_state.trade_history, new_trade], ignore_index=True)
     st.session_state.trade_history['Date'] = pd.to_datetime(st.session_state.trade_history['Date'])
     st.session_state.trade_history = st.session_state.trade_history.sort_values('Date')
+
+# Function to edit a trade
+def edit_trade(trade_id, new_date, new_type, new_ratio):
+    index = st.session_state.trade_history[st.session_state.trade_history['ID'] == trade_id].index[0]
+    if new_ratio == '1:1':
+        points = 1 if new_type == 'TP' else -1
+    else:  # 1:2
+        points = 2 if new_type == 'TP' else -1
+    p_l = 'Profit' if new_type == 'TP' else 'Loss'
+    
+    st.session_state.trade_history.at[index, 'Date'] = new_date
+    st.session_state.trade_history.at[index, 'Type'] = new_type
+    st.session_state.trade_history.at[index, 'Ratio'] = new_ratio
+    st.session_state.trade_history.at[index, 'Points'] = points
+    st.session_state.trade_history.at[index, 'P/L'] = p_l
+    st.session_state.trade_history['Date'] = pd.to_datetime(st.session_state.trade_history['Date'])
+    st.session_state.trade_history = st.session_state.trade_history.sort_values('Date')
+
+# Function to delete a trade
+def delete_trade(trade_id):
+    st.session_state.trade_history = st.session_state.trade_history[st.session_state.trade_history['ID'] != trade_id]
+
+# Function to calculate advanced metrics
+def calculate_advanced_metrics(df):
+    if df.empty:
+        return {
+            'consecutive_losses': 0,
+            'max_drawdown': 0,
+            'total_win_rate': '0.00%'
+        }
+    
+    # Consecutive Losses
+    max_consecutive_losses = 0
+    current_consecutive_losses = 0
+    for pl in df['P/L']:
+        if pl == 'Loss':
+            current_consecutive_losses += 1
+            max_consecutive_losses = max(max_consecutive_losses, current_consecutive_losses)
+        else:
+            current_consecutive_losses = 0
+    
+    # Max Drawdown
+    cumulative_points = df['Points'].cumsum()
+    peak = cumulative_points.cummax()
+    drawdown = peak - cumulative_points
+    max_drawdown = drawdown.max() if len(drawdown) > 0 else 0
+    
+    # Total Win Rate
+    total_win_rate = (df['P/L'] == 'Profit').mean() if not df.empty else 0
+    total_win_rate = f"{total_win_rate:.2%}"
+    
+    return {
+        'consecutive_losses': max_consecutive_losses,
+        'max_drawdown': max_drawdown,
+        'total_win_rate': total_win_rate
+    }
 
 # Function to generate analysis
 def generate_analysis(df):
@@ -74,9 +132,13 @@ def generate_analysis(df):
     ).reset_index()
     yearly_agg['Win_Rate'] = yearly_agg['Win_Rate'].apply(lambda x: f"{x:.2%}")
     
+    # Advanced metrics
+    advanced = calculate_advanced_metrics(df)
+    
     analysis['monthly'] = monthly_agg
     analysis['weekly'] = weekly_agg
     analysis['yearly'] = yearly_agg
+    analysis['advanced'] = advanced
     
     return analysis
 
@@ -115,19 +177,18 @@ def create_excel_download(df):
 # Streamlit UI
 st.title('Trade Journal')
 
-# Date selection
+# Date selection and trade entry
+st.subheader('Add New Trade')
 selected_date = st.date_input('Select Trading Date', datetime.today())
-
-# Trade type buttons
 col1, col2 = st.columns(2)
 with col1:
-    if st.button('TP (+2 points)'):
-        add_trade(selected_date, 'TP')
-        st.success(f"Added TP trade for {selected_date}")
+    trade_type = st.radio('Trade Type', ['TP', 'SL'])
 with col2:
-    if st.button('SL (-1 point)'):
-        add_trade(selected_date, 'SL')
-        st.success(f"Added SL trade for {selected_date}")
+    ratio = st.radio('Risk:Reward Ratio', ['1:1', '1:2'])
+
+if st.button('Add Trade'):
+    add_trade(selected_date, trade_type, ratio)
+    st.success(f"Added {trade_type} trade with {ratio} ratio for {selected_date}")
 
 # Display trade history
 st.subheader('Trade History')
@@ -136,12 +197,51 @@ if not st.session_state.trade_history.empty:
 else:
     st.info("No trades recorded yet.")
 
+# Edit/Delete functionality (only shown when needed)
+if not st.session_state.trade_history.empty:
+    st.subheader('Manage Trades')
+    edit_mode = st.checkbox('Enable Edit/Delete Mode')
+    
+    if edit_mode:
+        trade_id = st.selectbox(
+            'Select Trade to Edit/Delete',
+            st.session_state.trade_history['ID'],
+            format_func=lambda x: f"Trade {x[:8]}... ({st.session_state.trade_history[st.session_state.trade_history['ID'] == x]['Date'].iloc[0].date()}, {st.session_state.trade_history[st.session_state.trade_history['ID'] == x]['Type'].iloc[0]}, {st.session_state.trade_history[st.session_state.trade_history['ID'] == x]['Ratio'].iloc[0]})"
+        )
+        
+        col_edit, col_delete = st.columns(2)
+        with col_edit:
+            st.write("Edit Trade")
+            new_date = st.date_input(
+                'New Date',
+                st.session_state.trade_history[st.session_state.trade_history['ID'] == trade_id]['Date'].iloc[0].date()
+            )
+            new_type = st.radio(
+                'New Type',
+                ['TP', 'SL'],
+                index=0 if st.session_state.trade_history[st.session_state.trade_history['ID'] == trade_id]['Type'].iloc[0] == 'TP' else 1
+            )
+            new_ratio = st.radio(
+                'New Ratio',
+                ['1:1', '1:2'],
+                index=0 if st.session_state.trade_history[st.session_state.trade_history['ID'] == trade_id]['Ratio'].iloc[0] == '1:1' else 1
+            )
+            if st.button('Update Trade'):
+                edit_trade(trade_id, new_date, new_type, new_ratio)
+                st.success(f"Updated trade {trade_id[:8]}...")
+        
+        with col_delete:
+            if st.button('Delete Trade'):
+                delete_trade(trade_id)
+                st.success(f"Deleted trade {trade_id[:8]}...")
+                st.rerun()  # Rerun to refresh UI and hide edit/delete if no trades remain
+
 # Analysis dashboard
 if not st.session_state.trade_history.empty:
     st.subheader('Performance Analysis')
     analysis = generate_analysis(st.session_state.trade_history)
     
-    tab1, tab2, tab3 = st.tabs(["Monthly", "Weekly", "Yearly"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Monthly", "Weekly", "Yearly", "Advanced Metrics"])
     
     with tab1:
         st.write("Monthly Performance")
@@ -154,6 +254,12 @@ if not st.session_state.trade_history.empty:
     with tab3:
         st.write("Yearly Performance")
         st.dataframe(analysis['yearly'])
+        
+    with tab4:
+        st.write("Advanced Metrics")
+        st.write(f"**Maximum Consecutive Losses**: {analysis['advanced']['consecutive_losses']}")
+        st.write(f"**Maximum Drawdown**: {analysis['advanced']['max_drawdown']} points")
+        st.write(f"**Total Win Rate**: {analysis['advanced']['total_win_rate']}")
     
     # Download button
     st.subheader('Download Trade History')
