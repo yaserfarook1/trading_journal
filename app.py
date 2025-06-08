@@ -1,5 +1,5 @@
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime
 import pandas as pd
 import calendar
 from io import BytesIO
@@ -12,20 +12,21 @@ DATA_FILE = Path("trade_data.json")
 
 # Function to load data from JSON file
 def load_data():
-    if DATA_FILE.exists():
-        try:
+    try:
+        if DATA_FILE.exists():
             with open(DATA_FILE, 'r') as f:
                 data = json.load(f)
-            # Convert trade_history to DataFrame and ensure Date is datetime
             trade_history = pd.DataFrame(data.get('trade_history', []))
             if not trade_history.empty:
                 trade_history['Date'] = pd.to_datetime(trade_history['Date'])
             trading_pairs = data.get('trading_pairs', ['USDJPY', 'EURUSD'])
+            st.write("Debug: Loaded data from file.")
             return trade_history, trading_pairs
-        except Exception as e:
-            st.error(f"Error loading data: {e}")
-            return pd.DataFrame(columns=['ID', 'Date', 'Pair', 'Type', 'Ratio', 'Points', 'P/L']), ['USDJPY', 'EURUSD']
-    return pd.DataFrame(columns=['ID', 'Date', 'Pair', 'Type', 'Ratio', 'Points', 'P/L']), ['USDJPY', 'EURUSD']
+        st.write("Debug: No data file found, initializing defaults.")
+        return pd.DataFrame(columns=['ID', 'Date', 'Pair', 'Type', 'Ratio', 'Points', 'P/L']), ['USDJPY', 'EURUSD']
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        return pd.DataFrame(columns=['ID', 'Date', 'Pair', 'Type', 'Ratio', 'Points', 'P/L']), ['USDJPY', 'EURUSD']
 
 # Function to save data to JSON file
 def save_data(trade_history, trading_pairs):
@@ -35,22 +36,28 @@ def save_data(trade_history, trading_pairs):
             'trading_pairs': trading_pairs
         }
         with open(DATA_FILE, 'w') as f:
-            json.dump(data, f, default=str)  # Handle datetime serialization
+            json.dump(data, f, default=str)
+        st.write("Debug: Data saved to file.")
     except Exception as e:
         st.error(f"Error saving data: {e}")
 
 # Function to clear data
 def clear_data():
-    if DATA_FILE.exists():
-        DATA_FILE.unlink()
-    st.session_state.trade_history = pd.DataFrame(columns=['ID', 'Date', 'Pair', 'Type', 'Ratio', 'Points', 'P/L'])
-    st.session_state.trading_pairs = ['USDJPY', 'EURUSD']
-    st.success("All data cleared.")
-    st.rerun()
+    try:
+        if DATA_FILE.exists():
+            DATA_FILE.unlink()
+        st.session_state.trade_history = pd.DataFrame(columns=['ID', 'Date', 'Pair', 'Type', 'Ratio', 'Points', 'P/L'])
+        st.session_state.trading_pairs = ['USDJPY', 'EURUSD']
+        save_data(st.session_state.trade_history, st.session_state.trading_pairs)
+        st.success("All data cleared.")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Error clearing data: {e}")
 
-# Initialize session state with data from file
+# Initialize session state
 if 'trade_history' not in st.session_state or 'trading_pairs' not in st.session_state:
     st.session_state.trade_history, st.session_state.trading_pairs = load_data()
+    st.write(f"Debug: Initialized trading pairs: {st.session_state.trading_pairs}")
 
 # Function to add a new trading pair
 def add_trading_pair(new_pair):
@@ -120,7 +127,6 @@ def calculate_advanced_metrics(df):
             'total_win_rate': '0.00%'
         }
     
-    # Consecutive Losses
     max_consecutive_losses = 0
     current_consecutive_losses = 0
     for pl in df['P/L']:
@@ -130,13 +136,11 @@ def calculate_advanced_metrics(df):
         else:
             current_consecutive_losses = 0
     
-    # Max Drawdown
     cumulative_points = df['Points'].cumsum()
     peak = cumulative_points.cummax()
     drawdown = peak - cumulative_points
     max_drawdown = drawdown.max() if len(drawdown) > 0 else 0
     
-    # Total Win Rate
     total_win_rate = (df['P/L'] == 'Profit').mean() if not df.empty else 0
     total_win_rate = f"{total_win_rate:.2%}"
     
@@ -153,7 +157,6 @@ def generate_analysis(df):
     
     analysis = {}
     
-    # Monthly analysis
     monthly = df.copy()
     monthly['Month'] = monthly['Date'].dt.month
     monthly['Month_Name'] = monthly['Date'].dt.month_name()
@@ -167,20 +170,18 @@ def generate_analysis(df):
     ).reset_index()
     monthly_agg['Win_Rate'] = monthly_agg['Win_Rate'].apply(lambda x: f"{x:.2%}")
     
-    # Weekly analysis
     weekly = df.copy()
     weekly['Week'] = weekly['Date'].dt.isocalendar().week
     weekly['Year'] = weekly['Date'].dt.isocalendar().year
     weekly_agg = weekly.groupby(['Year', 'Week', 'Pair']).agg(
         Total_Trades=('Points', 'count'),
-        TP=('Type', lambda x: (x == 'TB').sum()),
+        TP=('Type', lambda x: (x == 'TP').sum()),
         SL=('Type', lambda x: (x == 'SL').sum()),
         Total_Points=('Points', 'sum'),
         Win_Rate=('P/L', lambda x: (x == 'Profit').mean())
     ).reset_index()
     weekly_agg['Win_Rate'] = weekly_agg['Win_Rate'].apply(lambda x: f"{x:.2%}")
     
-    # Yearly analysis
     yearly = df.copy()
     yearly['Year'] = yearly['Date'].dt.year
     yearly_agg = yearly.groupby(['Year', 'Pair']).agg(
@@ -192,7 +193,6 @@ def generate_analysis(df):
     ).reset_index()
     yearly_agg['Win_Rate'] = yearly_agg['Win_Rate'].apply(lambda x: f"{x:.2%}")
     
-    # Advanced metrics
     advanced = calculate_advanced_metrics(df)
     
     analysis['monthly'] = monthly_agg
@@ -202,7 +202,7 @@ def generate_analysis(df):
     
     return analysis
 
-# Function to create downloadable Excel with monthly sheets
+# Function to create downloadable Excel
 def create_excel_download(df):
     if df.empty:
         return None
@@ -210,7 +210,6 @@ def create_excel_download(df):
     output = BytesIO()
     writer = pd.ExcelWriter(output, engine='openpyxl')
     
-    # Create a sheet for each month-year combination
     df['Year'] = df['Date'].dt.year
     df['Month'] = df['Date'].dt.month
     
@@ -219,7 +218,6 @@ def create_excel_download(df):
         sheet_name = f"{month_name}_{year}"
         group.drop(['Year', 'Month'], axis=1).to_excel(writer, sheet_name=sheet_name[:31], index=False)
     
-    # Create a summary sheet
     summary = df.groupby(['Year', 'Month', 'Pair']).agg(
         Total_Trades=('Points', 'count'),
         TP=('Type', lambda x: (x == 'TP').sum()),
@@ -257,7 +255,7 @@ with col1:
 with col2:
     ratio = st.radio('Risk:Reward Ratio', ['1:1', '1:2'])
 with col3:
-    pair = st.selectbox('Trading Pair', st.session_state.trading_pairs)
+    pair = st.selectbox('Trading Pair', options=st.session_state.trading_pairs, key='pair_select')
 
 if st.button('Add Trade'):
     add_trade(selected_date, pair, trade_type, ratio)
@@ -270,7 +268,7 @@ if not st.session_state.trade_history.empty:
 else:
     st.info("No trades recorded yet.")
 
-# Edit/Delete functionality (only shown when needed)
+# Edit/Delete functionality
 if not st.session_state.trade_history.empty:
     st.subheader('Manage Trades')
     edit_mode = st.checkbox('Enable Edit/Delete Mode')
@@ -287,22 +285,26 @@ if not st.session_state.trade_history.empty:
             st.write("Edit Trade")
             new_date = st.date_input(
                 'New Date',
-                st.session_state.trade_history[st.session_state.trade_history['ID'] == trade_id]['Date'].iloc[0].date()
+                st.session_state.trade_history[st.session_state.trade_history['ID'] == trade_id]['Date'].iloc[0].date(),
+                key='edit_date'
             )
             new_pair = st.selectbox(
                 'New Pair',
                 st.session_state.trading_pairs,
-                index=st.session_state.trading_pairs.index(st.session_state.trade_history[st.session_state.trade_history['ID'] == trade_id]['Pair'].iloc[0])
+                index=st.session_state.trading_pairs.index(st.session_state.trade_history[st.session_state.trade_history['ID'] == trade_id]['Pair'].iloc[0]),
+                key='edit_pair'
             )
             new_type = st.radio(
                 'New Type',
                 ['TP', 'SL'],
-                index=0 if st.session_state.trade_history[st.session_state.trade_history['ID'] == trade_id]['Type'].iloc[0] == 'TP' else 1
+                index=0 if st.session_state.trade_history[st.session_state.trade_history['ID'] == trade_id]['Type'].iloc[0] == 'TP' else 1,
+                key='edit_type'
             )
             new_ratio = st.radio(
                 'New Ratio',
                 ['1:1', '1:2'],
-                index=0 if st.session_state.trade_history[st.session_state.trade_history['ID'] == trade_id]['Ratio'].iloc[0] == '1:1' else 1
+                index=0 if st.session_state.trade_history[st.session_state.trade_history['ID'] == trade_id]['Ratio'].iloc[0] == '1:1' else 1,
+                key='edit_ratio'
             )
             if st.button('Update Trade'):
                 edit_trade(trade_id, new_date, new_pair, new_type, new_ratio)
@@ -312,7 +314,7 @@ if not st.session_state.trade_history.empty:
             if st.button('Delete Trade'):
                 delete_trade(trade_id)
                 st.success(f"Deleted trade {trade_id[:8]}...")
-                st.rerun()  # Rerun to refresh UI and hide edit/delete if no trades remain
+                st.rerun()
 
 # Analysis dashboard
 if not st.session_state.trade_history.empty:
@@ -339,7 +341,6 @@ if not st.session_state.trade_history.empty:
         st.write(f"**Maximum Drawdown**: {analysis['advanced']['max_drawdown']} points")
         st.write(f"**Total Win Rate**: {analysis['advanced']['total_win_rate']}")
     
-    # Download button
     st.subheader('Download Trade History')
     excel_file = create_excel_download(st.session_state.trade_history)
     st.download_button(
