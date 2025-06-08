@@ -4,13 +4,68 @@ import pandas as pd
 import calendar
 from io import BytesIO
 import uuid
+import json
+from pathlib import Path
 
-# Initialize session state for trade history if it doesn't exist
-if 'trade_history' not in st.session_state:
-    st.session_state.trade_history = pd.DataFrame(columns=['ID', 'Date', 'Type', 'Ratio', 'Points', 'P/L'])
+# File to store trade data
+DATA_FILE = Path("trade_data.json")
+
+# Function to load data from JSON file
+def load_data():
+    if DATA_FILE.exists():
+        try:
+            with open(DATA_FILE, 'r') as f:
+                data = json.load(f)
+            # Convert trade_history to DataFrame and ensure Date is datetime
+            trade_history = pd.DataFrame(data.get('trade_history', []))
+            if not trade_history.empty:
+                trade_history['Date'] = pd.to_datetime(trade_history['Date'])
+            trading_pairs = data.get('trading_pairs', ['USDJPY', 'EURUSD'])
+            return trade_history, trading_pairs
+        except Exception as e:
+            st.error(f"Error loading data: {e}")
+            return pd.DataFrame(columns=['ID', 'Date', 'Pair', 'Type', 'Ratio', 'Points', 'P/L']), ['USDJPY', 'EURUSD']
+    return pd.DataFrame(columns=['ID', 'Date', 'Pair', 'Type', 'Ratio', 'Points', 'P/L']), ['USDJPY', 'EURUSD']
+
+# Function to save data to JSON file
+def save_data(trade_history, trading_pairs):
+    try:
+        data = {
+            'trade_history': trade_history.to_dict('records'),
+            'trading_pairs': trading_pairs
+        }
+        with open(DATA_FILE, 'w') as f:
+            json.dump(data, f, default=str)  # Handle datetime serialization
+    except Exception as e:
+        st.error(f"Error saving data: {e}")
+
+# Function to clear data
+def clear_data():
+    if DATA_FILE.exists():
+        DATA_FILE.unlink()
+    st.session_state.trade_history = pd.DataFrame(columns=['ID', 'Date', 'Pair', 'Type', 'Ratio', 'Points', 'P/L'])
+    st.session_state.trading_pairs = ['USDJPY', 'EURUSD']
+    st.success("All data cleared.")
+    st.rerun()
+
+# Initialize session state with data from file
+if 'trade_history' not in st.session_state or 'trading_pairs' not in st.session_state:
+    st.session_state.trade_history, st.session_state.trading_pairs = load_data()
+
+# Function to add a new trading pair
+def add_trading_pair(new_pair):
+    new_pair = new_pair.upper().strip()
+    if new_pair and new_pair not in st.session_state.trading_pairs:
+        st.session_state.trading_pairs.append(new_pair)
+        save_data(st.session_state.trade_history, st.session_state.trading_pairs)
+        st.success(f"Added new trading pair: {new_pair}")
+    elif new_pair in st.session_state.trading_pairs:
+        st.warning(f"Pair {new_pair} already exists.")
+    else:
+        st.error("Please enter a valid pair name.")
 
 # Function to add a trade
-def add_trade(date, trade_type, ratio):
+def add_trade(date, pair, trade_type, ratio):
     if ratio == '1:1':
         points = 1 if trade_type == 'TP' else -1
     else:  # 1:2
@@ -20,6 +75,7 @@ def add_trade(date, trade_type, ratio):
     new_trade = pd.DataFrame({
         'ID': [str(uuid.uuid4())],
         'Date': [date],
+        'Pair': [pair],
         'Type': [trade_type],
         'Ratio': [ratio],
         'Points': [points],
@@ -29,9 +85,10 @@ def add_trade(date, trade_type, ratio):
     st.session_state.trade_history = pd.concat([st.session_state.trade_history, new_trade], ignore_index=True)
     st.session_state.trade_history['Date'] = pd.to_datetime(st.session_state.trade_history['Date'])
     st.session_state.trade_history = st.session_state.trade_history.sort_values('Date')
+    save_data(st.session_state.trade_history, st.session_state.trading_pairs)
 
 # Function to edit a trade
-def edit_trade(trade_id, new_date, new_type, new_ratio):
+def edit_trade(trade_id, new_date, new_pair, new_type, new_ratio):
     index = st.session_state.trade_history[st.session_state.trade_history['ID'] == trade_id].index[0]
     if new_ratio == '1:1':
         points = 1 if new_type == 'TP' else -1
@@ -40,16 +97,19 @@ def edit_trade(trade_id, new_date, new_type, new_ratio):
     p_l = 'Profit' if new_type == 'TP' else 'Loss'
     
     st.session_state.trade_history.at[index, 'Date'] = new_date
+    st.session_state.trade_history.at[index, 'Pair'] = new_pair
     st.session_state.trade_history.at[index, 'Type'] = new_type
     st.session_state.trade_history.at[index, 'Ratio'] = new_ratio
     st.session_state.trade_history.at[index, 'Points'] = points
     st.session_state.trade_history.at[index, 'P/L'] = p_l
     st.session_state.trade_history['Date'] = pd.to_datetime(st.session_state.trade_history['Date'])
     st.session_state.trade_history = st.session_state.trade_history.sort_values('Date')
+    save_data(st.session_state.trade_history, st.session_state.trading_pairs)
 
 # Function to delete a trade
 def delete_trade(trade_id):
     st.session_state.trade_history = st.session_state.trade_history[st.session_state.trade_history['ID'] != trade_id]
+    save_data(st.session_state.trade_history, st.session_state.trading_pairs)
 
 # Function to calculate advanced metrics
 def calculate_advanced_metrics(df):
@@ -98,7 +158,7 @@ def generate_analysis(df):
     monthly['Month'] = monthly['Date'].dt.month
     monthly['Month_Name'] = monthly['Date'].dt.month_name()
     monthly['Year'] = monthly['Date'].dt.year
-    monthly_agg = monthly.groupby(['Year', 'Month', 'Month_Name']).agg(
+    monthly_agg = monthly.groupby(['Year', 'Month', 'Month_Name', 'Pair']).agg(
         Total_Trades=('Points', 'count'),
         TP=('Type', lambda x: (x == 'TP').sum()),
         SL=('Type', lambda x: (x == 'SL').sum()),
@@ -111,9 +171,9 @@ def generate_analysis(df):
     weekly = df.copy()
     weekly['Week'] = weekly['Date'].dt.isocalendar().week
     weekly['Year'] = weekly['Date'].dt.isocalendar().year
-    weekly_agg = weekly.groupby(['Year', 'Week']).agg(
+    weekly_agg = weekly.groupby(['Year', 'Week', 'Pair']).agg(
         Total_Trades=('Points', 'count'),
-        TP=('Type', lambda x: (x == 'TP').sum()),
+        TP=('Type', lambda x: (x == 'TB').sum()),
         SL=('Type', lambda x: (x == 'SL').sum()),
         Total_Points=('Points', 'sum'),
         Win_Rate=('P/L', lambda x: (x == 'Profit').mean())
@@ -123,7 +183,7 @@ def generate_analysis(df):
     # Yearly analysis
     yearly = df.copy()
     yearly['Year'] = yearly['Date'].dt.year
-    yearly_agg = yearly.groupby('Year').agg(
+    yearly_agg = yearly.groupby(['Year', 'Pair']).agg(
         Total_Trades=('Points', 'count'),
         TP=('Type', lambda x: (x == 'TP').sum()),
         SL=('Type', lambda x: (x == 'SL').sum()),
@@ -160,7 +220,7 @@ def create_excel_download(df):
         group.drop(['Year', 'Month'], axis=1).to_excel(writer, sheet_name=sheet_name[:31], index=False)
     
     # Create a summary sheet
-    summary = df.groupby(['Year', 'Month']).agg(
+    summary = df.groupby(['Year', 'Month', 'Pair']).agg(
         Total_Trades=('Points', 'count'),
         TP=('Type', lambda x: (x == 'TP').sum()),
         SL=('Type', lambda x: (x == 'SL').sum()),
@@ -177,18 +237,31 @@ def create_excel_download(df):
 # Streamlit UI
 st.title('Trade Journal')
 
+# Clear data button
+st.subheader('Clear All Data')
+if st.button('Clear Data'):
+    clear_data()
+
+# Add new trading pair
+st.subheader('Manage Trading Pairs')
+new_pair = st.text_input('Enter New Trading Pair (e.g., GBPUSD)')
+if st.button('Add Pair'):
+    add_trading_pair(new_pair)
+
 # Date selection and trade entry
 st.subheader('Add New Trade')
 selected_date = st.date_input('Select Trading Date', datetime.today())
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 with col1:
     trade_type = st.radio('Trade Type', ['TP', 'SL'])
 with col2:
     ratio = st.radio('Risk:Reward Ratio', ['1:1', '1:2'])
+with col3:
+    pair = st.selectbox('Trading Pair', st.session_state.trading_pairs)
 
 if st.button('Add Trade'):
-    add_trade(selected_date, trade_type, ratio)
-    st.success(f"Added {trade_type} trade with {ratio} ratio for {selected_date}")
+    add_trade(selected_date, pair, trade_type, ratio)
+    st.success(f"Added {trade_type} trade with {ratio} ratio for {pair} on {selected_date}")
 
 # Display trade history
 st.subheader('Trade History')
@@ -206,7 +279,7 @@ if not st.session_state.trade_history.empty:
         trade_id = st.selectbox(
             'Select Trade to Edit/Delete',
             st.session_state.trade_history['ID'],
-            format_func=lambda x: f"Trade {x[:8]}... ({st.session_state.trade_history[st.session_state.trade_history['ID'] == x]['Date'].iloc[0].date()}, {st.session_state.trade_history[st.session_state.trade_history['ID'] == x]['Type'].iloc[0]}, {st.session_state.trade_history[st.session_state.trade_history['ID'] == x]['Ratio'].iloc[0]})"
+            format_func=lambda x: f"Trade {x[:8]}... ({st.session_state.trade_history[st.session_state.trade_history['ID'] == x]['Date'].iloc[0].date()}, {st.session_state.trade_history[st.session_state.trade_history['ID'] == x]['Pair'].iloc[0]}, {st.session_state.trade_history[st.session_state.trade_history['ID'] == x]['Type'].iloc[0]}, {st.session_state.trade_history[st.session_state.trade_history['ID'] == x]['Ratio'].iloc[0]})"
         )
         
         col_edit, col_delete = st.columns(2)
@@ -215,6 +288,11 @@ if not st.session_state.trade_history.empty:
             new_date = st.date_input(
                 'New Date',
                 st.session_state.trade_history[st.session_state.trade_history['ID'] == trade_id]['Date'].iloc[0].date()
+            )
+            new_pair = st.selectbox(
+                'New Pair',
+                st.session_state.trading_pairs,
+                index=st.session_state.trading_pairs.index(st.session_state.trade_history[st.session_state.trade_history['ID'] == trade_id]['Pair'].iloc[0])
             )
             new_type = st.radio(
                 'New Type',
@@ -227,7 +305,7 @@ if not st.session_state.trade_history.empty:
                 index=0 if st.session_state.trade_history[st.session_state.trade_history['ID'] == trade_id]['Ratio'].iloc[0] == '1:1' else 1
             )
             if st.button('Update Trade'):
-                edit_trade(trade_id, new_date, new_type, new_ratio)
+                edit_trade(trade_id, new_date, new_pair, new_type, new_ratio)
                 st.success(f"Updated trade {trade_id[:8]}...")
         
         with col_delete:
